@@ -6,6 +6,7 @@ import pytest
 from conftest import FakeBroker, make_bars, wave
 
 from bot.backtest import run_backtest
+from bot.broker.base import Fill
 from bot.config import RiskConfig, load_config
 from bot.engine import Engine
 from bot.journal import Journal
@@ -182,3 +183,76 @@ def test_backtest_runs_and_reports():
     assert len(res["equity_curve"]) >= len(bars) - EmaCross(fast=5, slow=15).warmup
     for t in res["trades"]:
         assert t.exit_ts >= t.entry_ts and t.exit_ts - t.entry_ts < timedelta(days=30)
+
+
+# --- operating hours -------------------------------------------------------
+HOURS = """operating_hours:
+  tz: Europe/Berlin
+  days: [mon, tue, wed, thu, fri]
+  start: "08:00"
+  last_entry: "15:30"
+  stop: "15:55"
+"""
+
+
+def _cet(h, m, day=19):  # 2026-10-19 is a Monday; CEST = UTC+2
+    return datetime(2026, 10, day, h - 2, m, tzinfo=timezone.utc)
+
+
+def test_operating_hours_parsed(write_config):
+    cfg = load_config(write_config(HOURS))
+    assert cfg.operating_hours.days == frozenset(range(5))
+    with pytest.raises(ValueError, match="start < last_entry"):
+        load_config(write_config(HOURS.replace('"15:30"', '"16:30"')))
+
+
+def test_hours_waits_before_start_without_trading(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(7, 30))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    assert not b.orders and not e.stopped
+
+
+def test_hours_trades_crypto_inside_window(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(10, 0))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    assert "BTC" in b.positions
+
+
+def test_hours_no_new_entries_after_last_entry(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(15, 40))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    assert not b.orders and not e.stopped
+
+
+def test_hours_flattens_and_exits_at_stop(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(10, 0))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    assert "BTC" in b.positions
+    b._now = _cet(15, 55)
+    e.step()
+    assert not b.positions and e.stopped and not e.trades
+    assert "outside working hours" in e.cfg.journal.read_text()
+
+
+def test_hours_weekend_exits(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(10, 0, day=24))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    assert e.stopped and not b.orders
+
+
+def test_hours_retries_partial_close_then_warns(write_config):
+    b = FakeBroker({"SPY": make_bars([100.0] * 23), "BTC": _entry_series()}, now=_cet(10, 0))
+    e = _engine(write_config(HOURS), b)
+    e.step()
+    b.close = lambda inst, ref: Fill(0.0, 0.0)  # exchange won't fill the exit
+    b._now = _cet(15, 56)
+    for _ in range(4):
+        e.step()
+        assert not e.stopped  # keeps trying
+    e.step()
+    assert e.stopped and "STOP_NOT_FLAT" in e.cfg.journal.read_text()

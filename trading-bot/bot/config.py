@@ -22,6 +22,25 @@ class Session:
     flatten: time
 
 
+DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+@dataclass(frozen=True)
+class OperatingHours:
+    """When the bot itself runs. Outside the window it opens nothing; at `stop`
+    it closes every position it opened and exits, so nothing is left unattended."""
+
+    tz: ZoneInfo
+    days: frozenset[int]  # 0 = Monday
+    start: time
+    last_entry: time
+    stop: time
+
+    def __post_init__(self):
+        if not self.start < self.last_entry <= self.stop:
+            raise ValueError("operating_hours must satisfy start < last_entry <= stop")
+
+
 @dataclass(frozen=True)
 class RiskConfig:
     risk_per_trade_pct: float = 0.5
@@ -61,6 +80,7 @@ class Config:
     journal: Path
     state_file: Path
     kill_switch_file: Path
+    operating_hours: OperatingHours | None = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -119,6 +139,17 @@ def load_config(path: str | Path, env: dict | None = None) -> Config:
     if not instruments:
         raise ValueError("no instruments enabled")
 
+    hours = None
+    if oh := raw.get("operating_hours"):
+        days = [d.lower()[:3] for d in oh.get("days", DAY_NAMES[:5])]
+        if bad := [d for d in days if d not in DAY_NAMES]:
+            raise ValueError(f"operating_hours.days: unknown {bad}")
+        hours = OperatingHours(
+            tz=ZoneInfo(oh.get("tz", "Europe/Berlin")),
+            days=frozenset(DAY_NAMES.index(d) for d in days),
+            start=_t(oh["start"]), last_entry=_t(oh["last_entry"]), stop=_t(oh["stop"]),
+        )
+
     strat = raw.get("strategy", {})
     return Config(
         mode=mode,
@@ -136,5 +167,6 @@ def load_config(path: str | Path, env: dict | None = None) -> Config:
         journal=base / raw.get("journal", "journal.csv"),
         state_file=base / raw.get("state_file", "state.json"),
         kill_switch_file=base / raw.get("kill_switch_file", "STOP"),
+        operating_hours=hours,
         raw=raw,
     )

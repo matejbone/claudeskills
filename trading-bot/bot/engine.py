@@ -14,11 +14,13 @@ from bot.strategies.base import Strategy
 
 log = logging.getLogger("bot")
 
+MAX_SHUTDOWN_ATTEMPTS = 5
+
 
 class Engine:
     """Runs one strategy across all configured instruments.
 
-    Each `step()` is one poll: check the kill switch and daily loss limit,
+    Each `step()` is one poll: check the kill switch, working hours and daily loss limit,
     manage open trades (stop / target / strategy exit / end-of-day flatten),
     then look for new entries on freshly closed bars.
     """
@@ -30,6 +32,7 @@ class Engine:
         self.trades: dict[str, OpenTrade] = self._load_trades()
         self.last_bar: dict[str, datetime] = {}
         self.stopped = False
+        self.shutdown_attempts = 0
 
     # --- startup checks ------------------------------------------------------
     def preflight(self) -> None:
@@ -70,6 +73,31 @@ class Engine:
     def _local(self, now: datetime) -> datetime:
         tz = self.cfg.stock_session.tz if self.cfg.stock_session else timezone.utc
         return now.astimezone(tz)
+
+    def _operating_window(self, now: datetime) -> tuple[bool, bool]:
+        """(entries_allowed, must_shut_down) from operating_hours."""
+        oh = self.cfg.operating_hours
+        if oh is None:
+            return True, False
+        local = now.astimezone(oh.tz)
+        if local.weekday() not in oh.days:
+            return False, True
+        t = local.time()
+        # Before `start` the bot just waits; after `stop` it closes up and exits.
+        return oh.start <= t < oh.last_entry, t >= oh.stop
+
+    def _shutdown(self, now: datetime, reason: str) -> None:
+        """Close everything the bot opened, then stop. Retries partial fills on
+        later polls before giving up and warning loudly."""
+        self.flatten_all(reason)
+        self.shutdown_attempts += 1
+        if not self.trades:
+            self.journal.write(now, "STOP", note=reason)
+            self.stopped = True
+        elif self.shutdown_attempts >= MAX_SHUTDOWN_ATTEMPTS:
+            self.journal.write(now, "STOP_NOT_FLAT", note=f"{reason}; still open: {sorted(self.trades)}"
+                                                         " - close these manually")
+            self.stopped = True
 
     def _stock_window(self, now: datetime) -> tuple[bool, bool]:
         """(entries_allowed, must_flatten) for stocks."""
@@ -114,6 +142,9 @@ class Engine:
             self.journal.write(now, "STOP", note="kill switch file found")
             self.stopped = True
             return
+        hours_ok, must_shut_down = self._operating_window(now)
+        if must_shut_down:
+            return self._shutdown(now, "outside working hours")
 
         equity = self.broker.equity()
         today = self._local(now).date()
@@ -129,7 +160,7 @@ class Engine:
         for inst in self.cfg.instruments:
             try:
                 self._step_instrument(inst, now, equity, today,
-                                      entries_ok or inst.market is Market.CRYPTO,
+                                      hours_ok and (entries_ok or inst.market is Market.CRYPTO),
                                       must_flatten and inst.market is Market.STOCKS)
             except Exception as exc:  # one bad symbol shouldn't stop the others
                 log.exception("error on %s", inst.symbol)
