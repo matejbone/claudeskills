@@ -88,9 +88,35 @@ class Config:
         return self.mode == "live"
 
 
+def check_mode(mode: str, port: int, env) -> None:
+    """Live trading needs two independent switches so it can't happen by accident."""
+    if mode not in ("paper", "live"):
+        raise ValueError("mode must be 'paper' or 'live'")
+    if mode == "live":
+        if env.get(LIVE_ENV) != "yes":
+            raise ValueError(f"mode: live also requires the environment variable {LIVE_ENV}=yes")
+        if port in PAPER_PORTS:
+            raise ValueError(f"mode: live but port {port} is a paper-trading port")
+    elif port not in PAPER_PORTS:
+        raise ValueError(f"mode: paper but port {port} is not a paper port {sorted(PAPER_PORTS)}")
+
+
 def _t(s: str) -> time:
     h, m = s.split(":")
     return time(int(h), int(m))
+
+
+def parse_operating_hours(oh: dict | None) -> OperatingHours | None:
+    if not oh:
+        return None
+    days = [d.lower()[:3] for d in oh.get("days", DAY_NAMES[:5])]
+    if bad := [d for d in days if d not in DAY_NAMES]:
+        raise ValueError(f"operating_hours.days: unknown {bad}")
+    return OperatingHours(
+        tz=ZoneInfo(oh.get("tz", "Europe/Berlin")),
+        days=frozenset(DAY_NAMES.index(d) for d in days),
+        start=_t(oh["start"]), last_entry=_t(oh["last_entry"]), stop=_t(oh["stop"]),
+    )
 
 
 def load_config(path: str | Path, env: dict | None = None) -> Config:
@@ -100,19 +126,10 @@ def load_config(path: str | Path, env: dict | None = None) -> Config:
     base = path.parent
 
     mode = raw.get("mode", "paper")
-    if mode not in ("paper", "live"):
-        raise ValueError("mode must be 'paper' or 'live'")
     ib = raw.get("ib", {})
     port = int(ib.get("port", 7497))
 
-    # Live trading needs two independent switches so it can't happen by accident.
-    if mode == "live":
-        if env.get(LIVE_ENV) != "yes":
-            raise ValueError(f"mode: live also requires the environment variable {LIVE_ENV}=yes")
-        if port in PAPER_PORTS:
-            raise ValueError(f"mode: live but port {port} is a paper-trading port")
-    elif port not in PAPER_PORTS:
-        raise ValueError(f"mode: paper but port {port} is not a paper port {sorted(PAPER_PORTS)}")
+    check_mode(mode, port, env)
 
     instruments: list[Instrument] = []
     session = None
@@ -139,16 +156,7 @@ def load_config(path: str | Path, env: dict | None = None) -> Config:
     if not instruments:
         raise ValueError("no instruments enabled")
 
-    hours = None
-    if oh := raw.get("operating_hours"):
-        days = [d.lower()[:3] for d in oh.get("days", DAY_NAMES[:5])]
-        if bad := [d for d in days if d not in DAY_NAMES]:
-            raise ValueError(f"operating_hours.days: unknown {bad}")
-        hours = OperatingHours(
-            tz=ZoneInfo(oh.get("tz", "Europe/Berlin")),
-            days=frozenset(DAY_NAMES.index(d) for d in days),
-            start=_t(oh["start"]), last_entry=_t(oh["last_entry"]), stop=_t(oh["stop"]),
-        )
+    hours = parse_operating_hours(raw.get("operating_hours"))
 
     strat = raw.get("strategy", {})
     return Config(

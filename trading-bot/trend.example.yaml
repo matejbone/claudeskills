@@ -1,0 +1,53 @@
+# Daily trend following across currencies, equity indices, gold and bonds.
+# Copy to trend.yaml. Run: .venv/bin/python -m bot trend-run --config trend.yaml
+#
+# The bot checks once a day at rebalance_time and holds positions for days to
+# weeks. It does NOT close everything at the end of the day - that's the strategy.
+
+mode: paper            # paper | live (live also needs TRADING_BOT_LIVE=yes and a live port)
+ib:
+  host: 127.0.0.1
+  port: 7497           # TWS paper 7497 / IB Gateway paper 4002
+  client_id: 18
+account_currency: EUR
+
+operating_hours:       # when the program runs (your local time)
+  tz: Europe/Berlin
+  days: [mon, tue, wed, thu, fri]
+  start: "08:00"
+  last_entry: "15:30"
+  stop: "15:55"        # program exits; positions stay open
+rebalance_time: "09:30"  # after Xetra opens at 09:00
+
+strategy:
+  lookbacks: [21, 63, 126, 252]   # ~1, 3, 6, 12 months of trading days
+  vol_window: 60                  # days used to measure each asset's volatility
+
+risk:
+  target_vol_pct: 8          # aim for ~8% yearly portfolio swings (hard max 20)
+  max_weight_per_asset: 0.5  # no single position above 50% of equity
+  max_gross_exposure: 1.5    # sum of all positions at most 150% of equity (hard max 3)
+  rebalance_threshold: 0.25  # only trade when a position is >25% off target (saves fees)
+  max_drawdown_pct: 20       # from the equity peak: flatten all and halt until you reset
+
+# cost_pct = estimated commission + spread per side, % of the traded amount.
+# min_order is in account currency (EUR); smaller adjustments are skipped.
+# EU retail accounts can't buy US-listed ETFs (PRIIPs), so these are UCITS ETFs
+# on Xetra. Check each symbol resolves in TWS before going live.
+assets:
+  # Forex majors (IDEALPRO). Long or short. Quantity is in the base currency.
+  - {symbol: EURUSD, market: forex, currency: USD, cost_pct: 0.005, min_order: 2000}
+  - {symbol: GBPUSD, market: forex, currency: USD, cost_pct: 0.005, min_order: 2000}
+  - {symbol: USDJPY, market: forex, currency: JPY, cost_pct: 0.005, min_order: 2000}
+  - {symbol: AUDUSD, market: forex, currency: USD, cost_pct: 0.005, min_order: 2000}
+  - {symbol: USDCHF, market: forex, currency: CHF, cost_pct: 0.005, min_order: 2000}
+  - {symbol: USDCAD, market: forex, currency: CAD, cost_pct: 0.005, min_order: 2000}
+  # UCITS ETFs on Xetra, long or flat only.
+  - {symbol: SXR8, market: stocks, exchange: SMART, primary_exchange: IBIS, currency: EUR, cost_pct: 0.1, min_order: 1000}  # iShares Core S&P 500
+  - {symbol: EXSA, market: stocks, exchange: SMART, primary_exchange: IBIS, currency: EUR, cost_pct: 0.1, min_order: 1000}  # iShares STOXX Europe 600
+  - {symbol: 4GLD, market: stocks, exchange: SMART, primary_exchange: IBIS, currency: EUR, cost_pct: 0.1, min_order: 1000}  # Xetra-Gold
+  - {symbol: EUNH, market: stocks, exchange: SMART, primary_exchange: IBIS, currency: EUR, cost_pct: 0.1, min_order: 1000}  # iShares Core EUR Govt Bond
+
+journal: trend_journal.csv
+state_file: trend_state.json
+kill_switch_file: STOP

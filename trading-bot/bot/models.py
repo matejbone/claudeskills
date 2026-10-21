@@ -8,6 +8,7 @@ from enum import Enum
 class Market(str, Enum):
     STOCKS = "stocks"
     CRYPTO = "crypto"
+    FOREX = "forex"
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class Instrument:
     exchange: str
     currency: str = "USD"
     qty_decimals: int = 0
+    primary_exchange: str = ""  # e.g. "IBIS" (Xetra) to disambiguate SMART-routed stocks/ETFs
 
     @property
     def key(self) -> str:

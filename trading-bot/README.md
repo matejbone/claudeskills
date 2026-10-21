@@ -1,4 +1,4 @@
-# Day-trading bot (Interactive Brokers: stocks + crypto)
+# Trading bot (Interactive Brokers): daily trend following + intraday
 
 A small, testable framework: **strategy → risk manager → engine → broker**.
 It starts in **paper mode**, and every safety limit lives in code and config, not in prompts.
@@ -7,7 +7,38 @@ It starts in **paper mode**, and every safety limit lives in code and config, no
 > placeholder to exercise the plumbing. It is **not** a proven edge. Paper trade for weeks
 > before considering real money, and never risk money you can't afford to lose.
 
-## Setup steps
+## Two modes
+
+| | **Trend following** (recommended) | Intraday (original) |
+|---|---|---|
+| Command | `python -m bot trend-run --config trend.yaml` | `python -m bot run --config config.yaml` |
+| Markets | Forex majors + UCITS ETFs (S&P 500, Europe 600, gold, euro govt bonds) | Crypto (and US stocks) |
+| Decisions | Once a day at 09:30 CET | Every bar |
+| Holding period | Days to weeks, **held overnight** | Minutes to hours, flat by 15:55 |
+| Trades | Roughly 10–40 a year per asset | Many per day |
+| Evidence | Time-series momentum across dozens of markets over decades (Moskowitz, Ooi & Pedersen 2012) | None that survives IB crypto fees |
+
+### Trend following: how it works
+- **Signal:** for each asset, check whether the price is higher or lower than it was 1, 3, 6 and 12 months ago. All up gives +1 (long), all down gives −1 (short), and mixed results give something in between. ETFs are long-only, so they go flat in a downtrend. Forex can be long or short.
+- **Size:** each asset is scaled so it contributes similar risk. Calm markets get bigger positions, wild ones smaller. The whole portfolio targets about **8% yearly volatility**.
+- **Caps:** at most 50% of equity per asset and 150% gross across all assets. Trades only happen when a position is more than 25% off target, which keeps fees low.
+- **Max drawdown halt:** if equity falls 20% from its peak, the bot sells everything and **refuses to restart** until you review the journal and delete `trend_state.json`.
+- **Working hours:** starts at 08:00 and rebalances at 09:30 (after Xetra opens). At 15:55 the program exits but **positions stay open**, because holding through trends is the strategy. There are no stop-losses. Risk is controlled by position size, the caps and the drawdown halt.
+- **Missing data:** if an asset's data can't be fetched, it's left untouched for the day rather than sold.
+
+**What to expect:** trend following loses on most small moves and in choppy, sideways years, sometimes for a year or more. Its gains come from a few big trends, and historically it helped most during prolonged crashes. Expect long flat or losing stretches, not steady income.
+
+### Trend following: steps
+1. Complete IBKR setup steps 1–3 below (paper account, TWS/IB Gateway, API on).
+   - Forex short positions need a **margin** account. EU retail clients can only buy **UCITS** ETFs, not US-listed ones, so the example uses Xetra listings.
+   - Subscribe to Xetra/German ETF market data and IDEALPRO forex data.
+2. Run `cp trend.example.yaml trend.yaml`. Check each ETF symbol resolves in TWS.
+3. Download about 10 years of daily data: `.venv/bin/python -m bot trend-download --years 10`
+4. Backtest: `.venv/bin/python -m bot trend-backtest --curve-out data/curve.csv`. This reports CAGR, volatility, Sharpe, max drawdown, trades per year, fees paid and returns per year. Ask Claude to review the results with the `backtest-expert` skill.
+5. Paper trade with `.venv/bin/python -m bot trend-run` for at least **2–3 months**. A trend strategy needs time to show anything.
+6. Only then decide about live trading (same three switches as below).
+
+## Setup steps (IBKR, shared by both modes)
 
 1. **Open an IBKR account** and, in Client Portal, enable **paper trading**. You get a separate
    `DU…` paper account. For crypto, request crypto trading permissions; it's offered via PAXOS
@@ -22,7 +53,7 @@ It starts in **paper mode**, and every safety limit lives in code and config, no
    cd trading-bot
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    cp config.example.yaml config.yaml   # edit symbols, risk limits, strategy params
-   .venv/bin/python -m pytest -q tests  # 24 tests, no IB connection needed
+   .venv/bin/python -m pytest -q tests  # 42 tests, no IB connection needed
    ```
 5. **Get data and backtest:**
    ```bash

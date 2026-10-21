@@ -53,10 +53,15 @@ class IBBroker(Broker):
     # --- data ----------------------------------------------------------------
     def contract(self, inst: Instrument):
         if inst.key not in self._contracts:
-            from ib_async import Crypto, Stock
+            from ib_async import Crypto, Forex, Stock
 
-            c = (Stock(inst.symbol, inst.exchange, inst.currency) if inst.market is Market.STOCKS
-                 else Crypto(inst.symbol, inst.exchange, inst.currency))
+            if inst.market is Market.STOCKS:
+                c = Stock(inst.symbol, inst.exchange, inst.currency,
+                          primaryExchange=inst.primary_exchange)
+            elif inst.market is Market.FOREX:
+                c = Forex(inst.symbol)  # e.g. "EURUSD"; quantity is in the base currency
+            else:
+                c = Crypto(inst.symbol, inst.exchange, inst.currency)
             self.ib.qualifyContracts(c)
             self._contracts[inst.key] = c
         return self._contracts[inst.key]
@@ -136,3 +141,65 @@ class IBBroker(Broker):
         self._wait([trade])
         filled = float(trade.orderStatus.filled)
         return Fill(filled, float(trade.orderStatus.avgFillPrice) if filled else 0.0)
+
+
+class IBTrendBroker(IBBroker):
+    """Daily-bar and target-position methods for the trend engine."""
+
+    def __init__(self, host: str, port: int, client_id: int):
+        super().__init__(host, port, client_id, bar_size="1 day", slippage_pct=0.05)
+        self._fx_cache: dict[tuple[str, str], float] = {}
+
+    def daily_bars(self, inst: Instrument, count: int) -> list[Bar]:
+        years = max(1, count // 240 + 1)
+        what = {Market.FOREX: "MIDPOINT", Market.STOCKS: "ADJUSTED_LAST"}.get(inst.market, "TRADES")
+        raw = self.ib.reqHistoricalData(self.contract(inst), endDateTime="", durationStr=f"{years} Y",
+                                        barSizeSetting="1 day", whatToShow=what, useRTH=True)
+        today = self.now().date()
+        out = []
+        for b in raw:
+            d = b.date if not isinstance(b.date, datetime) else b.date.date()
+            if d >= today:
+                continue  # today's bar is still forming
+            out.append(Bar(datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+                           b.open, b.high, b.low, b.close, float(b.volume)))
+        return out[-count:]
+
+    def fx_rate(self, frm: str, to: str) -> float:
+        if frm == to:
+            return 1.0
+        if (frm, to) not in self._fx_cache:
+            from ib_async import Forex
+
+            for pair, invert in ((frm + to, False), (to + frm, True)):
+                c = Forex(pair)
+                if not self.ib.qualifyContracts(c):
+                    continue
+                bars = self.ib.reqHistoricalData(c, endDateTime="", durationStr="5 D",
+                                                 barSizeSetting="1 day", whatToShow="MIDPOINT",
+                                                 useRTH=True)
+                if bars:
+                    px = bars[-1].close
+                    self._fx_cache[(frm, to)] = 1 / px if invert else px
+                    break
+            else:
+                raise RuntimeError(f"no FX rate for {frm}->{to}")
+        return self._fx_cache[(frm, to)]
+
+    def order(self, inst: Instrument, qty: float, ref_price: float) -> Fill:
+        from ib_async import LimitOrder, MarketOrder
+
+        side = "BUY" if qty > 0 else "SELL"
+        if inst.market is Market.FOREX:
+            order = MarketOrder(side, abs(qty))
+        else:
+            px = ref_price * (1 + self.slip if qty > 0 else 1 - self.slip)
+            order = LimitOrder(side, abs(qty), round(px, 2), tif="DAY")
+        trade = self.ib.placeOrder(self.contract(inst), order)
+        self._wait([trade])
+        if not trade.isDone():
+            self.ib.cancelOrder(trade.order)  # don't leave stale orders; tomorrow re-checks
+            self.ib.sleep(1)
+        filled = float(trade.orderStatus.filled)
+        return Fill(filled if qty > 0 else -filled,
+                    float(trade.orderStatus.avgFillPrice) if filled else 0.0)
