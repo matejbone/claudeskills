@@ -1,0 +1,4 @@
+# Reviewed per CLAUDE.md: ib_async 2.1.0 (BSD-2, ib-api-reloaded/ib_async @ ab629f3)
+ib_async==2.1.0
+PyYAML>=6.0
+pytest>=8.0

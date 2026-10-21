@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+config.yaml
+state*.json
+journal.csv
+STOP
+data/*.csv
+trend.yaml
+trend_state.json
+trend_journal.csv

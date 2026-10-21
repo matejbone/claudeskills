@@ -1,0 +1,65 @@
+# Copy to config.yaml and edit. Start in paper mode and stay there until
+# backtests AND several weeks of paper results look good.
+
+mode: paper            # paper | live  (live also needs TRADING_BOT_LIVE=yes in the environment)
+
+ib:
+  host: 127.0.0.1
+  port: 7497           # TWS: paper 7497 / live 7496. IB Gateway: paper 4002 / live 4001
+  client_id: 17
+
+# When the bot itself runs (your local time). No new trades outside
+# start..last_entry; at `stop` it closes every position it opened and exits,
+# so nothing is left open (crypto has no broker-side stop on IB).
+# Remove this block to run around the clock.
+operating_hours:
+  tz: Europe/Berlin    # Central European time (CET/CEST, DST handled)
+  days: [mon, tue, wed, thu, fri]
+  start: "08:00"
+  last_entry: "15:30"
+  stop: "15:55"
+
+bar_size: 5 mins       # IB bar size string
+poll_seconds: 60       # how often the bot wakes up
+
+strategy:
+  name: ema_cross      # see bot/strategies/ - add your own and register it
+  params:
+    fast: 9
+    slow: 21
+    atr_period: 14
+    atr_stop_mult: 1.5
+    reward_risk: 2.0
+
+markets:
+  stocks:
+    enabled: false     # US stocks trade 15:30-22:00 CET - outside the working hours above
+    symbols: [SPY, QQQ]
+    exchange: SMART
+    currency: USD
+    qty_decimals: 0
+    session:
+      tz: America/New_York
+      start: "09:45"   # no new entries before this
+      last_entry: "15:30"
+      flatten: "15:50" # close everything - no overnight holds
+    pdt_guard: true    # under $25k: max 3 day trades per 5 business days
+  crypto:
+    enabled: true
+    symbols: [BTC, ETH]
+    exchange: PAXOS
+    currency: USD
+    qty_decimals: 4
+
+risk:
+  risk_per_trade_pct: 0.5    # % of equity lost if the stop is hit
+  max_position_pct: 20       # max notional per position, % of equity
+  max_daily_loss_pct: 2.0    # circuit breaker: flatten everything and stop for the day
+  max_open_positions: 2
+  max_trades_per_day: 10
+  min_stop_pct: 0.15         # skip trades whose stop is closer than this (costs would dominate)
+  slippage_pct: 0.05         # used for marketable limit prices and backtests
+  fee_pct: 0.02              # backtest fee per side
+
+journal: journal.csv
+kill_switch_file: STOP       # create this file to flatten everything and exit
